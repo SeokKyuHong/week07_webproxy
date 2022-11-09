@@ -18,12 +18,8 @@ static const char *user_agent_hdr =
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
     "Firefox/10.0.3\r\n";
 
-/*doit, 한 개의 HTTP 트랜잭션을 처리한다.
-Rio: 강제로 input,output 한다.*/
-
-//GET http://naver.com/index.html:8000 HTTP/1.1
-
-void doit(int fd)// fd = file descriptor = 파일 식별자
+/*doit, 한 개의 HTTP 트랜잭션을 처리한다.*/
+void doit(int fd)// fd = file descriptor = 파일 식별자(connfd 받아온거임)
 {
   int clientfd;
   // MAXLINE : 8192, 2^23, 8kbyte
@@ -32,8 +28,8 @@ void doit(int fd)// fd = file descriptor = 파일 식별자
   rio_t rio;
   rio_t rio_com;
 
-  Rio_readinitb(&rio, fd); //fd의 주소값을 rio로!
-  Rio_readlineb(&rio, buf, MAXLINE);    //한줄을 읽어 오는거 (GET /godzilla.gif HTTP/1.1)
+  Rio_readinitb(&rio, fd);            //fd의 주소값을 rio로!
+  Rio_readlineb(&rio, buf, MAXLINE);  //한줄을 읽어 오는거 (GET /godzilla.gif HTTP/1.1)
 
   printf("Request headers: \n");
   printf("%s", buf);
@@ -41,6 +37,7 @@ void doit(int fd)// fd = file descriptor = 파일 식별자
   //자르기 시작
   sscanf(buf, "%s http://%s %s", method, uri, version);
 
+  //이상한 요청 거르기
   if (!(strcasecmp(method, "GET") == 0 || strcasecmp(method, "HEAD") == 0))
   {
     clienterror(fd, method, "501", "Not impemented",
@@ -50,10 +47,12 @@ void doit(int fd)// fd = file descriptor = 파일 식별자
 
   //파싱 시작
   parse_uri(uri, request_ip, port, filename);
+  //파싱 완료
 
   //헤더랑 응답라인
   clientfd = Open_clientfd(request_ip, port);
   header_make(method, request_ip, user_agent_hdr, version, clientfd, filename);
+  //헤더 만들고 tiny로 보냈음
 
   //서버에서 왔음
   serve_static(clientfd, fd);
@@ -103,45 +102,52 @@ int parse_uri(char *uri, char *request_ip, char *port, char *filename)
 
 void header_make(char *method, char *request_ip, char *user_agent_hdr, char *version, int clientfd, char *filename)
 {
-  char buf[MAXLINE];
+  char buf[MAXLINE]; //임시 버프
+
+  /*자른 데이터를 헤더로 만들어 buf로 tiny에게 전달*/
+  //앞줄을 하나씩 물고와요 한다.
   sprintf(buf, "%s %s %s\r\n", method, filename, "HTTP/1.0");
   sprintf(buf, "%sHost: %s\r\n", buf, request_ip);
   sprintf(buf, "%s%s", buf, user_agent_hdr);
   sprintf(buf, "%sConnection: %s\r\n", buf, "close");
   sprintf(buf, "%sProxy-Connection: %s\r\n\r\n", buf, "close");
 
+  //서버로 보낸다. 
   Rio_writen(clientfd, buf, strlen(buf));
 }
 
 /*정적 컨텐츠를 클라이언트에게 제공*/
 void serve_static(int clientfd, int fd)
 {
-  int srcfd;
-  char *srcp, *p, con_len[MAXLINE], buf[MAXBUF];
+  int src_size;
+  char *srcp, *p, content_length[MAXLINE], buf[MAXBUF];
   rio_t server_rio;
 
-  Rio_readinitb(&server_rio, clientfd);
-  Rio_readlineb(&server_rio, buf, MAXLINE);
-  
-  while(strcmp(buf, "\r\n"))
-  {
-    if (strncmp(buf, "Content-length:", 15)==0)
-    {
-      p = index(buf, 32); //32 아스키 코드 공백
-      strcpy(con_len, p+1);
-      srcfd = atoi(con_len);
-    }
+  Rio_readinitb(&server_rio, clientfd);         //rio_t의 읽기 버퍼와 fd를 연결
 
+  Rio_readlineb(&server_rio, buf, MAXLINE);     //rio_t에서 읽어서 버퍼에 저장(한줄씩 >_-)
+  Rio_writen(fd, buf, strlen(buf));             //fd에 써서 보내준다.(클라이언트로)
+
+  while(strcmp(buf, "\r\n"))                    //우리의 헤더는 가장 끝에 빈줄이 있으므로 그걸 만날때까지 읽어보자
+  {                                             
+    if (strncmp(buf, "Content-length:", 15)==0) //strncmp함수는 두 문자열의 길이를 비교한다. 참이면 같다!
+    {
+      p = index(buf, 32);                       //32은 아스키 코드 공백, 공백의 포인터 할당
+      strcpy(content_length, p+1);              //공백뒤에 있는 '텍스트'를 임시 변수에 할당
+      src_size = atoi(content_length);          //정수로 바꾸어 src_size에 사이즈 저장
+    }
+    
+    Rio_readlineb(&server_rio, buf, MAXLINE);   //읽으면서 보내(클라이언트로
     Rio_writen(fd, buf, strlen(buf));
-    Rio_readlineb(&server_rio, buf, MAXLINE);
   }
-  Rio_writen(fd, buf, strlen(buf));
+  /*헤더끝*/
   
+  /*body 보내기 시작*/
   /*mmap대신 malloc으로 구현*/
-  srcp = malloc(srcfd);
-  Rio_readnb(&server_rio, srcp, srcfd);
-  Rio_writen(fd, srcp, srcfd); 
-  free(srcp);
+  srcp = malloc(src_size);                  //바디 사이즈 할당
+  Rio_readnb(&server_rio, srcp, src_size);  //읽고
+  Rio_writen(fd, srcp, src_size);           //보내
+  free(srcp);                               //malloc 프리
 }
 
 /*에러 처리 함수*/
@@ -169,33 +175,30 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
 
 /*argc: 함수의 전달된 인자의 개수, argv: 가변적인 개수의 문자열*/
 int main(int argc, char **argv) {
-  int listenfd, connfd;
-  char hostname[MAXLINE], port[MAXLINE];
-  socklen_t clientlen;
-  struct sockaddr_storage clientaddr;
+  int listenfd, connfd;                   // listenfd: 프록시 듣기식별자, connfd: 프록시연결 식별자
+  char hostname[MAXLINE], port[MAXLINE];  // 클라이언트에게 받은 uil 정보를 담음 공간
+  socklen_t clientlen;                    // 소켓 길이를 저장할 구조체
+  struct sockaddr_storage clientaddr;     // 소켓 구조체(clientaddress 들어감)
 
-  /* Check command line args */
-  if (argc != 2) {            //입력인자
-    fprintf(stderr, "usage: %s <port>\n", argv[0]);     //파일이름
+  if (argc != 2) {            //입력인자가 2개인지 확인
+    fprintf(stderr, "usage: %s <port>\n", argv[0]);
     exit(1);
   }
-
-  listenfd = Open_listenfd(argv[1]);      //포트파일 
+  listenfd = Open_listenfd(argv[1]);  // listen 소켓 오픈 
 
   /*무한서버 루프, 반복적으로 연결 요청을 접수*/
   while (1) {
     clientlen = sizeof(clientaddr);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); // 연결 요청 접수, 소켓 어드래스(SA) 
-    //-> 포트번호는 내가 정하고 있고 사용자가 주소를 치면 받아서 비교 후 억셉트 -> 연결!
+    //-> 포트번호는 내가 정하고 있고 사용자가 주소를 치면 받아서 비교 후 트억셉 -> 연결!
     
-    //connfd가 뭘까 : 4
     Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE, 0); 
-    // 받은걸로 갯네임과 호스트 네임으로 만들어 준다
+    // 받은걸로 호스트 네임과 포트를 저장
 
     // hostname: 143.248.204.8(내아이피) , port: 49981
     printf("Accepted connection from (%s, %s)\n", hostname, port);
     
-    doit(connfd);   // 연결 ㄱ
+    doit(connfd);   // 이제 connfd로 연결하러 doit!
     
     Close(connfd);  // 자신쪽(서버?)의 연결 끝을 닫는다.
   }
