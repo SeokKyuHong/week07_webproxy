@@ -4,8 +4,20 @@
 /*
 사전쓰레드된 동시성 서버구현
  - 한 개의 생산자와 다수의 소비자를 갖는 생산자-소비자
-
+ *    Client                 Proxy(thread)                             Server   
+ *  ----------                ----------                             ----------           
+ * | Clientfd |   ------->   |  Connfd  |                           |  Connfd  |  
+ *  ----------                ----------                             ----------
+ * |          |              | Proxy    |          doit()           |          |
+ * |          |              | Clientfd |        --------->         |          |
+ * |          |              |          |    request_to_server()    | Listenfd |
+ * |          |              | Listenfd |                           |          |
+ * |          |   <-------   |          |        <---------         |          |        
+ *  ----------    Close()     ----------   response_from_server()    ----------
+ *                           | CacheMem |
+ *                            ----------                        
 */
+
 void *thread(void *vargp);
 int sbuf_remove(sbuf_t *sp);
 void sbuf_init(sbuf_t *sp, int n);
